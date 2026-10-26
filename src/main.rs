@@ -29,11 +29,7 @@ fn main() -> Result<()> {
             commands::stop::stop()?;
         },
         Commands::Info(args) => {
-            if args.log {
-                println!("InfoCommand is not implemented");
-            } else {
-                println!("InfoCommand is not implemented");
-            }
+            commands::info::info(args)?;
         },
         Commands::Publish(args) =>{
             commands::publish::publish(args)?;

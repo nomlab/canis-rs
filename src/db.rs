@@ -1,6 +1,9 @@
-use rusqlite::{Connection, Result, params};
+use rusqlite::{Connection, params};
+use rusqlite::OptionalExtension;
 use chrono::{DateTime, Utc, SecondsFormat};
+use chrono::NaiveDateTime;
 use url::Url;
+use anyhow::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperationType {
@@ -43,6 +46,30 @@ pub struct Process {
     pub ppid:       i32,
     pub exe:        String,
     pub cmd:        String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DigestRow {
+    pub id: i64,
+    pub created_at: String,
+    pub uri: String,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperationRow {
+    pub id: i64,
+    pub digest_id: i64,
+    pub timestamp: String,
+    pub operation: String,
+    pub uri: String,
+    pub src_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathCount {
+    pub uri: String,
+    pub count: i64,
 }
 
 pub struct EventRepository {
@@ -175,6 +202,143 @@ impl EventRepository {
             }
         )?;
 
-        rows.collect()
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
+
+    pub fn oldest_digest_by_hash(&self, hash: &str) -> Result<Option<DigestRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, uri, hash
+            FROM Digest
+            WHERE hash = ?1
+            ORDER BY created_at ASC
+            LIMIT 1",
+        )?;
+
+        // クエリを実行し、最初の1件だけを取得する
+        let mut rows = stmt.query_map(params![hash], |row| {
+            Ok(DigestRow {
+                id:         row.get(0)?,
+                created_at: row.get(1)?,
+                uri:        row.get(2)?,
+                hash:       row.get(3)?,
+            })
+        })?;
+
+        match rows.next() {
+            Some(row_result) => Ok(Some(row_result?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_operations_by_hash(
+        &self,
+        hash: &str,
+        since: Option<NaiveDateTime>,
+        until: Option<NaiveDateTime>,
+    ) -> Result<Vec<OperationRow>> {
+        let since_str = since.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string());
+        let until_str = until.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string());
+
+        let mut stmt = self.conn.prepare(
+            "SELECT o.id, o.digest_id, o.operation, o.timestamp, o.uri, o.src_path
+            FROM Operation o
+            JOIN Digest d ON o.digest_id = d.id
+            WHERE d.hash = ?1
+            AND o.operation IN ('Create', 'Move', 'Modify', 'Append', 'Write')
+            AND (?2 IS NULL OR o.timestamp >= ?2)
+            AND (?3 IS NULL OR o.timestamp <= ?3)
+            ORDER BY o.timestamp ASC",
+        )?;
+
+        let rows = stmt.query_map(
+            params![hash, since_str, until_str],
+            |row| {
+                Ok(OperationRow {
+                    id: row.get(0)?,
+                    digest_id: row.get(1)?,
+                    operation: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    uri: row.get(4)?,
+                    src_path: row.get(5)?,
+                })
+            },
+        )?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_operation_counts_by_prefix(
+        &self,
+        prefix: &str,
+        since: Option<NaiveDateTime>,
+        until: Option<NaiveDateTime>,
+    ) -> Result<Vec<PathCount>> {
+        let since_str = since.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string());
+        let until_str = until.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string());
+
+        let normalized_prefix = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{}/", prefix)
+        };
+        // エスケープしてからワイルドカードの'%'を末尾に付与
+        let like_pattern = format!("{}%", escape_like_pattern(&normalized_prefix));
+
+        let mut stmt = self.conn.prepare(
+            "SELECT o.uri, COUNT(*) as cnt
+            FROM Operation o
+            WHERE o.uri LIKE ?1 ESCAPE '\\'
+            AND (?2 IS NULL OR o.timestamp >= ?2)
+            AND (?3 IS NULL OR o.timestamp <= ?3)
+            GROUP BY o.uri",
+        )?;
+
+        let rows = stmt.query_map(
+            params![like_pattern, since_str, until_str],
+            |row| {
+                Ok(PathCount {
+                    uri: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            },
+        )?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_operation_time_bounds(&self, prefix: &str) -> Result<Option<(NaiveDateTime, NaiveDateTime)>> {
+        let normalized_prefix = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{}/", prefix)
+        };
+        let like_pattern = format!("{}%", escape_like_pattern(&normalized_prefix));
+
+        let result: Option<(Option<String>, Option<String>)> = self.conn.query_row(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM Operation WHERE uri LIKE ?1 ESCAPE '\\'",
+            params![like_pattern],
+            |row| -> rusqlite::Result<(Option<String>, Option<String>)> {
+                Ok((row.get(0)?, row.get(1)?))
+            },
+        ).optional()?;
+
+        match result {
+            Some((Some(min_s), Some(max_s))) => {
+                let fmt = "%Y-%m-%dT%H:%M:%S%.f";
+                let min_dt = NaiveDateTime::parse_from_str(&min_s, fmt)?;
+                let max_dt = NaiveDateTime::parse_from_str(&max_s, fmt)?;
+                Ok(Some((min_dt, max_dt)))
+            }
+            _ => Ok(None), // 該当する操作記録が1件もない
+        }
+    }
+}
+
+fn escape_like_pattern(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

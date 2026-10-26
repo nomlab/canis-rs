@@ -23,6 +23,8 @@ base64 = "0.22"
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
 sysinfo = {version = "0.38.4"}
 url = "2.5.8"
+open = "5.4.0"
+webbrowser = "1.2.2"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

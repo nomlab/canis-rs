@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, Args};
 use std::path::PathBuf;
+use chrono::NaiveDateTime;
 
 
 #[derive(Parser)]
@@ -18,7 +19,7 @@ pub enum Commands {
     #[cfg(target_os = "linux")]
     /// Stop canis system
     Stop,
-    /// Display digest about file
+    /// Display information for digest
     Info(InfoArgs),
     /// Publish daily hash
     Publish(PublishArgs),
@@ -119,13 +120,45 @@ pub struct StartArgs {
 
 #[derive(Args)]
 pub struct InfoArgs {
-    /// Path to the file to search
-    #[arg(value_name = "FILEPATH")]
-    pub filepath: String,
+    /// Path to target file or directory
+    #[arg(short = 'p', long = "path", conflicts_with = "hash")]
+    pub path: Option<PathBuf>,
 
-    /// Generate log about file
-    #[arg(short = 'l', long = "log")]
-    pub log: bool,
+    /// Hash of target file
+    #[arg(short = 'H', long = "hash", conflicts_with = "path")]
+    pub hash: Option<String>,
+
+    /// Generate tracing log about file
+    #[arg(short = 't', long, conflicts_with = "heatmap")]
+    pub trace: bool,
+
+    /// Generate heatmap
+    #[arg(short = 'm', long, conflicts_with = "trace")]
+    pub heatmap: bool,
+
+    /// Specify config file
+    #[arg(short = 'c', long = "config")]
+    pub config: Option<PathBuf>,
+
+    /// Path to database file for digest
+    #[arg(long)]
+    pub dbfile: Option<String>,
+
+    /// Start of the period to search
+    #[arg(long, value_parser = parse_datetime)]
+    pub since: Option<NaiveDateTime>,
+
+    /// End of the period to search
+    #[arg(long, value_parser = parse_datetime)]
+    pub until: Option<NaiveDateTime>,
+
+    /// Skip confirmation prompt for large date ranges
+    #[arg(short = 'y', long, requires = "heatmap", help_heading = "Heatmap Options")]
+    pub yes: bool,
+
+    /// Path to a JSON file containing directory descriptions to attach to the heatmap
+    #[arg(long, requires = "heatmap", help_heading = "Heatmap Options")]
+    pub explain: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -172,4 +205,13 @@ impl PublishArgs {
             && self.token.as_ref().map_or(false, |l| !l.is_empty())
             && self.repo.as_ref().map_or(false, |l| !l.is_empty())
     }
+}
+
+fn parse_datetime(s: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| {
+            chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+        })
+        .map_err(|_| format!("invalid date/time: '{s}' (expected YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)"))
 }
