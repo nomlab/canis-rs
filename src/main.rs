@@ -19,7 +19,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init (args) => {
-            commands::init::init(args)?
+            commands::init::init(args)?;
         },
         Commands::Start (args) => {
             commands::start::start(args)?;

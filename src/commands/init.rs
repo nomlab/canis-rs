@@ -12,8 +12,10 @@ pub fn init(args: InitArgs) -> Result<()>{
     if args.config.is_none() && args.start.is_none() && args.publish.is_none() {
         println!("Starting configuration file generation");
         init_config(&args)?;
+
         println!("Starting service file generation");
         init_start(&args)?;
+
         println!("Starting publish service file generation.");
         init_publish(&args)?;
     }
@@ -145,14 +147,6 @@ fn init_config(args: &InitArgs) -> Result<()>{
         .collect::<Vec<_>>()
         .join(", ");
 
-
-pub fn get_default_log_path(app_name: &str) -> Option<PathBuf> {
-    directories_next::ProjectDirs::from("", "", app_name)
-        .map(|proj_dirs| {
-            let data_dir = proj_dirs.data_dir();
-            data_dir.join("canis.log")
-        })
-}
     // ログファイルのパスを取得
     let dbfile = match &args.dbfile {
         Some(w) => w.clone(),
