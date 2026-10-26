@@ -75,6 +75,160 @@ class CanisServer:
 
         return f"Hash log saved to: {path}"
 
+    def get_directory_tree(self, directory: str) -> str:
+        """Return a tree of operated files under the specified directory."""
+
+        uri = self._normalize_to_uri(directory)
+        if uri is None:
+            raise ValueError("Directory must be an absolute path or URI.")
+
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT DISTINCT uri
+                FROM Operation
+                WHERE uri LIKE ? || '%'
+                ORDER BY uri
+                """,
+                (uri,),
+            ).fetchall()
+
+        root_path = Path(urlparse(uri).path)
+
+        root = {
+            "name": root_path.name,
+            "path": uri,
+            "files": [],
+            "children": {}
+        }
+
+        for row in rows:
+            file_uri = row["uri"]
+            file_path = Path(urlparse(file_uri).path)
+
+            try:
+                rel = file_path.relative_to(root_path)
+            except ValueError:
+                continue
+
+            node = root
+            current_path = root_path
+
+            for dirname in rel.parts[:-1]:
+                current_path /= dirname
+
+                node = node["children"].setdefault(
+                    dirname,
+                    {
+                        "name": dirname,
+                        "path": current_path.as_uri(),
+                        "files": [],
+                        "children": {}
+                    }
+                )
+
+            node["files"].append(rel.name)
+
+        def convert(node):
+            return {
+                "name": node["name"],
+                "path": node["path"],
+                "files": sorted(node["files"]),
+                "children": {
+                    name: convert(child)
+                    for name, child in sorted(node["children"].items())
+                }
+            }
+
+        return json.dumps(convert(root), indent=2, ensure_ascii=False)
+
+    def save_directory_description(self, output_path: str, tree_json: str) -> str:
+        """
+        Save generated directory descriptions.
+
+        Arguments
+        ---------
+        output_path:
+            Destination JSON file.
+
+        tree:
+            The COMPLETE directory tree as a JSON object.
+
+        The value of `tree` MUST be a JSON object, NOT a JSON string.
+
+        Correct example:
+
+        {
+        "path": "file:///home/otsuki/research",
+        "description": "...",
+        "children": {
+            "paper": {
+            "path": "...",
+            "description": "...",
+            "children": {}
+            }
+        }
+        }
+
+        Incorrect example (DO NOT DO THIS):
+
+        {
+        "tree": "{\"path\":\"...\"}"
+        }
+
+        The tool writes the tree to the output file and merges existing descriptions.
+        """
+
+        try:
+            tree = json.loads(tree_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON: {e}")
+
+        output = Path(output_path)
+
+        if output.exists():
+            try:
+                with output.open("r", encoding="utf-8") as f:
+                    old_tree = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                old_tree = None
+        else:
+            old_tree = None
+
+        def merge(old: dict | None, new: dict) -> dict:
+            result = {
+                "path": new["path"],
+                "description": new.get("description", ""),
+                "children": {}
+            }
+
+            if old is not None:
+                old_desc = old.get("description", "")
+                if result["description"].strip() == "":
+                    result["description"] = old_desc
+
+            old_children = old.get("children", {}) if old else {}
+
+            for name, child in new.get("children", {}).items():
+                result["children"][name] = merge(
+                    old_children.get(name),
+                    child
+                )
+
+            return result
+
+        merged = merge(old_tree, tree)
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        with output.open("w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+
+        return (
+            f"Successfully saved directory descriptions to "
+            f"'{output.resolve()}'."
+        )
+
     @staticmethod
     def _normalize_to_uri(target: str) -> str:
         parsed = urlparse(target)
@@ -138,6 +292,58 @@ async def serve(hashlog: str) -> None:
                     },
                     "required": ["day","path"],
                 }
+            ),
+            Tool(
+                name="get_directory_tree",
+                description=(
+                    "Return the operated directory tree under the specified directory. "
+                    "Use this tool first when generating directory descriptions. "
+                    "Only call more detailed tools if filenames and directory structure are insufficient."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Directory path or URI."
+                        }
+                    },
+                    "required": ["directory"],
+                }
+            ),
+            Tool(
+                name="save_directory_description",
+                description = (
+                    "A JSON string representing the complete directory tree.\n\n"
+                    "The JSON must exactly preserve the structure returned by "
+                    "get_directory_tree.\n"
+                    "Only fill the description fields.\n"
+                    "Do not remove 'path'.\n"
+                    "Do not remove 'files'.\n"
+                    "Do not convert children into an array.\n"
+                    "Keep children as an object.\n\n"
+                    "Example:\n"
+                    "{\"path\":\"file:///...\",\"description\":\"...\",\"children\":{}}"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "output_path": {
+                            "type": "string",
+                            "description": "Destination JSON file."
+                        },
+                        "tree_json": {
+                            "type": "string",
+                            "description": (
+                                "Directory description tree as a JSON string."
+                            )
+                        }
+                    },
+                    "required": [
+                        "output_path",
+                        "tree_json"
+                    ]
+                }
             )
         ]
 
@@ -171,6 +377,32 @@ async def serve(hashlog: str) -> None:
                         raise ValueError("Missing required argument: path")
 
                     result = canis_server.create_daily_log_file(day, path)
+
+                case "get_directory_tree":
+                    directory = arguments.get("directory")
+                    if not directory:
+                        raise ValueError("Missing required argument: directory")
+
+                    result = canis_server.get_directory_tree(directory)
+
+                case "save_directory_description":
+                    output_path = arguments.get("output_path")
+                    tree_json = arguments.get("tree_json")
+
+                    if not output_path:
+                        raise ValueError(
+                            "Missing required argument: output_path"
+                        )
+
+                    if tree_json is None:
+                        raise ValueError(
+                            "Missing required argument: tree_json"
+                        )
+
+                    result = canis_server.save_directory_description(
+                        output_path,
+                        tree_json
+                    )
 
             return [
                 TextContent(type="text", text=result.strip())
