@@ -779,20 +779,48 @@ const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
 
     const allEntries = [...dirEntries, ...fileEntries];
     if (allEntries.length === 0) return;
+    const IDLE_MAX_RATIO = 0.10; // 無操作まとめ矩形の高さ上限(列全体に対する割合)
+    const IDLE_MIN_HEIGHT = 20;  // 文字が入る最低限の高さ(px)
 
-    const totalUnits = allEntries.reduce((sum, c) => sum + (c.is_file ? 1 : computeUnits(c, remainingDepth - 1)), 0);
+    const activeEntries = allEntries.filter(c => c.total_count > 0);
+    const idleEntries   = allEntries.filter(c => c.total_count === 0);
 
-    let cursor = y0;
+    const totalHeight = y1 - y0;
+    let idleHeight = 0;
+    if (idleEntries.length > 0) {
+      idleHeight = Math.max(IDLE_MIN_HEIGHT, totalHeight * IDLE_MAX_RATIO);
+      if (activeEntries.length === 0) idleHeight = totalHeight; // 操作ありが皆無なら全体を使う
+    }
+    const activeHeight = totalHeight - idleHeight;
+
     const nextX = x + COLUMN_WIDTH;
-    for (const entry of allEntries) {
+    let cursor = y0;
+
+    // 操作ありを activeHeight の範囲で従来どおり配分
+    const totalUnits = activeEntries.reduce(
+      (sum, c) => sum + (c.is_file ? 1 : computeUnits(c, remainingDepth - 1)), 0);
+
+    for (const entry of activeEntries) {
       const units = entry.is_file ? 1 : computeUnits(entry, remainingDepth - 1);
-      const h = (y1 - y0) * (units / totalUnits);
+      const h = activeHeight * (units / totalUnits);
       if (entry.is_file) {
-        chart.appendChild(makeRect(entry, nextX, cursor, COLUMN_WIDTH, h, false, entry.total_count > 0));
+        chart.appendChild(makeRect(entry, nextX, cursor, COLUMN_WIDTH, h, false, true));
       } else {
         layoutColumn(entry, nextX, cursor, cursor + h, remainingDepth - 1, chart, false);
       }
       cursor += h;
+    }
+
+    // 無操作は1つの疑似ノードにまとめて末尾に置く
+    if (idleEntries.length > 0) {
+      const idleNode = {
+        name: "他 " + idleEntries.length + " 件",
+        full_path: "",
+        total_count: 0,
+        is_file: false,
+        children: {}
+      };
+      chart.appendChild(makeRect(idleNode, nextX, cursor, COLUMN_WIDTH, idleHeight, false, false));
     }
   }
 
