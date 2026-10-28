@@ -185,15 +185,20 @@ Generate template files for configuration
 Usage: canis init [OPTIONS]
 
 Options:
-  -c, --config <CONFIG>    Path to configuration file
-      --watcher <WATCHER>  File system watcher backend to use
-      --targets <TARGETS>  Paths to watch for operation
-      --dbfile <DBFILE>    Path to database file for digest
-      --hashdir <HASHDIR>  Local git repository path for hash storage and publication
-  -s, --start <START>      Generate service file for monitoring (canis start)
-  -b, --binary <BINARY>    Path to canis binary file
-  -p, --publish            Generate only service file for daily publishing (canis publish)
-  -h, --help               Print help
+  -c, --config <CONFIG>      Path to configuration file
+      --watcher <WATCHER>    File system watcher backend to use
+      --targets <TARGETS>    Paths to watch for operation
+      --dbfile <DBFILE>      Path to database file for digest
+      --ignore <IGNORE>      Paths to ignore by the file system watcher
+      --hashdir <HASHDIR>    Directory to store daily hash files
+      --token <TOKEN>        GitHub Personal Access Token
+      --repo <REPO>          GitHub repository name to store daily hash files
+  -s, --start <START>        Generate service file for monitoring (canis start)
+  -b, --binary <BINARY>      Path to canis binary file
+  -p, --publish <PUBLISH>    Generate service file for daily publishing (canis publish)
+      --date <DATE>          Date to create daily hash
+      --schedule <SCHEDULE>  Time to run the publish command daily (e.g. 09:00)
+  -h, --help                 Print help
 ```
 
 - canis start -h
@@ -207,6 +212,7 @@ Options:
       --watcher <WATCHER>  File system watcher backend to use
       --targets <TARGETS>  Paths to watch for operation
       --dbfile <DBFILE>    Path to database file for digest
+      --ignore <IGNORE>    Paths to ignore by the file system watcher
   -d, --daemon             Start background
   -h, --help               Print help
 ```
@@ -221,18 +227,26 @@ Options:
   -h, --help  Print help
 ```
 
-- canis info -h (TODO)
+- canis info -h
 ```
-Display digest about file
+Display information for digest
 
-Usage: canis info [OPTIONS] <FILEPATH>
-
-Arguments:
-  <FILEPATH>  Path to the file to search
+Usage: canis info [OPTIONS]
 
 Options:
-  -l, --log   Generate log about file
-  -h, --help  Print help
+  -p, --path <PATH>      Path to target file or directory
+  -H, --hash <HASH>      Hash of target file
+  -t, --trace            Generate tracing log about file
+  -m, --heatmap          Generate heatmap
+  -c, --config <CONFIG>  Specify config file
+      --dbfile <DBFILE>  Path to database file for digest
+      --since <SINCE>    Start of the period to search
+      --until <UNTIL>    End of the period to search
+  -h, --help             Print help
+
+Heatmap Options:
+  -y, --yes                Skip confirmation prompt for large date ranges
+      --explain <EXPLAIN>  Path to a JSON file containing directory descriptions to attach to the heatmap
 ```
 
 - canis publish -h
@@ -385,8 +399,9 @@ canis の設定を記載できる設定ファイルや自動起動のための�
   service ファイルでは起動処理を定義し，timer ファイルはその実行タイミングを定義します．
 
   各ファイルのデフォルトの配置場所は
-   -timer: `/home/<user>/.config/systemd/user/canis-publish.timer`
-   -service: `/home/<user>/.config/systemd/user/canis-publish.service`
+   - timer: `/home/<user>/.config/systemd/user/canis-publish.timer`
+   - service: `/home/<user>/.config/systemd/user/canis-publish.service`
+
   に設定しています．
 
   まず，timer ファイルの内容の例を以下に示します．
@@ -489,17 +504,85 @@ canis の設定を記載できる設定ファイルや自動起動のための�
   </plist>
   ```
 
-### info コマンド(TODO)
+### info コマンド
+canis によって保存した証跡の検索や証跡を活用した機能を実行します．
+
+証跡を保存しているデータベースの配置場所や検索，表示のための設定項目は引数で指定できます．
+
+本コマンドでは，オプションによって以下の3種類の情報の検索，出力ができます．
+ - 証跡に関する情報の検索機能
+ - ハッシュ値を軸にしたファイルの操作履歴の出力機能
+ - ディレクトリやファイルの操作頻度を示すヒートマップ出力機能
+
+以下では，それぞれの機能について，コマンド例および出力例を示します．
+
+1. **証跡に関する情報の検索機能**
+
+ファイルパスまたはハッシュ値を指定し，対応する証跡情報を検索・表示します．
+ファイルパスを指定した場合は，ファイルの内容から算出したハッシュ値を用いて検索します．
+
+コマンドの形式を以下に示します．
 ```
-canis info FILEPATH
+ canis info {-p <PATH> | -H <HASH>}
 ```
-保存した証跡から `FILEPATH` について検索し，以下のような情報を出力します．
+ファイルパスを指定する場合のコマンド例を以下に示します．
 ```
-作成時刻: 2026-02-01T02:03:04.230445
-ファイル: /home/user/test.txt
-ハッシュ: ad56fcd90f67e70ba2f6d35779a856e70d32310cffdf61eda9885298bb83e595
+ canis info -p /home/user/research/paper.tex
 ```
-ここから，検索した `FILEPATH` のハッシュ値となるファイルがいつから存在していたかを示すために利用できます．
+
+検索結果の出力例を以下に示します．
+```
+検索結果:
+  存在した日時: 2026-10-20 10:50:30
+  ファイルパス: file:///home/user/research/paper.tex
+  ハッシュ値: b1c4be21020f95e22f45f4c8aca489a0efe4fd1ab8203af7d1b2cd88b9f168dc
+```
+
+2. **ハッシュ値を軸にしたファイルの操作履歴の出力機能**
+
+ファイルパスまたはハッシュ値を指定し，ハッシュ値に対応するファイルについての操作履歴を出力します．
+ファイルパスを指定した場合は，ファイルの内容から算出したハッシュ値を用いて検索します．
+移動などによって所在がわからなくなったファイルについて，現在の配置場所を探す際に役立ちます．
+
+コマンドの形式を以下に示します．
+```
+ canis info --trace {-p <PATH> | -H <HASH>}
+```
+ファイルパスを指定する場合のコマンド例を以下に示します．
+```
+ canis info --trace -p /home/user/research/paper.tex
+```
+
+操作履歴の出力例を以下に示します．
+```
+W  2026-04-15T10:00:00.000000  file:///home/user/paper/ipsj/data.log
+M  2026-05-20T14:30:00.000000  file:///home/user/submitted/ipsj/data.log  (from: file:///home/user/paper/ipsj/data.log)
+M  2026-07-10T09:15:00.000000  file:///home/user/old/ipsj/data.log  (from: file:///home/user/submitted/ipsj/data.log)
+```
+操作種別は以下の通りです．
+- 作成 : C
+- 更新 : W
+- 移動 : M
+
+3. **ディレクトリやファイルの操作頻度を示すヒートマップ出力機能**
+
+ディレクトリのパスを指定し，ディレクトリやファイルの操作頻度を期間ごとにヒートマップとして出力します．
+作成や利用から時間が経ち，所在がわからなくなったファイルについて配置場所を探す際に役立ちます．
+
+コマンドの形式を以下に示します．
+```
+ canis info --heatmap -p <PATH> [--explain <EXPLAIN>]
+```
+`explain` オプションで説明情報を記述した JSON ファイルを指定すると，その情報をヒートマップに付加できます．
+この JSON ファイルは，LLM を利用して生成できます．
+
+実際のコマンド例を以下に示します．
+```
+ canis info --heatmap -p /home/user/research --explain /home/user/explain.json
+```
+
+ヒートマップの出力例を以下に示します．
+![#Heatmap](./doc/heatmap.png)
 
 
 # Advanced Setting
