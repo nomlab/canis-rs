@@ -588,7 +588,7 @@ fn init_start(args: &InitArgs)-> Result<()>{
 "#,
         username = username,
         bin_path = binary_path.display(),
-        config_path = config.config_path.display(),
+        config_path = config_path.display(),
         stdout_path = stdout_path.display(),
         stderr_path = stderr_path.display()
     );
@@ -1005,9 +1005,9 @@ fn init_publish(args: &InitArgs)-> Result<()>{
     };
     let (hour, minute) = {
         let parts: Vec<&str> = schedule.splitn(2, ':').collect();
-        let hour: u32 = parts[0].parse();
-        let minute: u32 = parts[1].parse();
-        (hour, minute);
+        let hour: u32 = parts[0].parse()?;
+        let minute: u32 = parts[1].parse()?;
+        (hour, minute)
     };
 
     // ログファイル(標準出力)のパス
@@ -1079,7 +1079,7 @@ fn init_publish(args: &InitArgs)-> Result<()>{
 "#,
         username = username,
         bin_path = binary_path.display(),
-        config_path = config.config_path.display(),
+        config_path = config_path.display(),
         stdout_path = stdout_path.display(),
         stderr_path = stderr_path.display()
     );
@@ -1088,4 +1088,6 @@ fn init_publish(args: &InitArgs)-> Result<()>{
     fs::write(&unit_file_path, plist_content)?;
 
     println!("launchd plist file created at: {}", unit_file_path.display());
+
+    Ok(())
 }
