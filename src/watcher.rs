@@ -9,7 +9,6 @@ use chrono::Utc;
 use sysinfo::{System,Pid, ProcessesToUpdate, ProcessRefreshKind, UpdateKind};
 use serde_json;
 use url::Url;
-use signal_hook::{consts::{SIGINT, SIGTERM}, iterator::Signals};
 use std::sync::Mutex;
 
 use crate::error::{Result, WatcherError};
@@ -113,18 +112,13 @@ impl FileWatcher {
         }
 
         // シグナルハンドラ
-        let mut signals = Signals::new(&[SIGINT, SIGTERM])
-            .expect("Failed to initialize signal handler");
-
-        std::thread::spawn(move || {
-            for sig in signals.forever() {
-                eprintln!("\nReceived signal {}", sig);
-                if let Ok(mut w) = watcher_clone.lock() {
-                    w.take(); // drop → tx がdrop → rx のブロックが解ける
-                }
-                break;
+        ctrlc::set_handler(move || {
+            eprintln!("\nReceived termination signal");
+            if let Ok(mut w) = watcher_clone.lock() {
+                w.take(); // drop → tx が drop → rx のブロックが解ける
             }
-        });
+        })
+        .expect("Failed to set signal handler");
 
         println!("Press Ctrl+C to exit\n");
 
@@ -234,17 +228,11 @@ impl FileWatcher {
         let running_clone = Arc::clone(&running);
 
         // SIGINTとSIGTERMを監視
-        let mut signals = Signals::new(&[SIGINT, SIGTERM])
-            .expect("Failed to initialize signal handler");
-
-        // シグナル監視スレッド
-        std::thread::spawn(move || {
-            for sig in signals.forever() {
-                eprintln!("\nReceived signal {}", sig);
-                running_clone.store(false, Ordering::SeqCst);
-                break;
-            }
-        });
+        ctrlc::set_handler(move || {
+            eprintln!("\nReceived termination signal");
+            running_clone.store(false, Ordering::SeqCst);
+        })
+        .expect("Failed to set signal handler");
 
         let observers = Arc::clone(&self.observers);
         let fs = PassthroughFS::new(renamed_path.clone(), observers, ignore_paths);
