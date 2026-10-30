@@ -5,9 +5,23 @@ on:
     tags:
       - "v*"
 
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create GitHub Release"
+        type: boolean
+        required: true
+        default: false
+
+      release_version:
+        description: "Release version (e.g. v1.0.13)"
+        type: string
+        required: false
+        default: ""
+
 jobs:
   build:
-    name: Build and upload (${{ matrix.os }})
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -26,16 +40,41 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate release version
+        if: inputs.create_release
+        shell: bash
+        env:
+          VERSION: ${{ inputs.release_version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: $VERSION"
+            echo "Expected format: v1.0.0"
+            exit 1
+          fi
+
       - name: Build (release)
         run: cargo build --release --no-default-features
 
       - name: Prepare release artifact
         shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -e
 
           NAME="canis"
-          VERSION="${{ github.ref_name }}"
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            VERSION="$REF_NAME"
+          elif [ "$CREATE_RELEASE" = "true" ]; then
+            VERSION="$RELEASE_VERSION"
+          else
+            VERSION="build-${RUN_NUMBER}"
+          fi
 
           mkdir -p dist
 
@@ -53,7 +92,20 @@ jobs:
             cp "target/release/${NAME}" "dist/${NAME}-linux-${ARCH}-${VERSION}"
           fi
 
+      # タグ push または手動 Release 作成時
       - name: Upload artifacts to GitHub Release
+        if: github.ref_type == 'tag' || inputs.create_release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_version }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_version }}
           files: dist/*
+
+      # 手動ビルドのみの場合
+      - name: Upload build artifacts
+        if: github.ref_type != 'tag' && !inputs.create_release
+        uses: actions/upload-artifact@v4
+        with:
+          name: canis-${{ runner.os }}
+          path: dist/*
